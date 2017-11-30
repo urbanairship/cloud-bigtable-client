@@ -22,9 +22,11 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
+import com.google.common.collect.FluentIterable;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimaps;
 
+import com.google.common.primitives.Longs;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.client.Mutation;
@@ -38,8 +40,10 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * A {@link DoFn} function that converts a {@link Result} in the pipeline input to a
@@ -50,6 +54,8 @@ class HBaseResultToMutationFn
   private static Logger logger = LoggerFactory.getLogger(HBaseImportIO.class);
 
   private static final long serialVersionUID = 1L;
+
+  private static final long MAX_NUM_MUTATIONS = 100_000;
 
   private static final Predicate<Cell> IS_DELETE_MARKER_FILTER =  new Predicate<Cell>() {
     @Override
@@ -81,6 +87,18 @@ class HBaseResultToMutationFn
   public void processElement(ProcessContext context) throws Exception {
     KV<ImmutableBytesWritable, Result> kv = context.element();
     List<Cell> cells = checkEmptyRow(kv);
+    if (cells.size() >= MAX_NUM_MUTATIONS) {
+      logger.warn(String.format("Encountered a mutation with %d columns, max processable is %d. Taking latest 1000 columns", cells.size(), MAX_NUM_MUTATIONS));
+      Collections.sort(cells, new Comparator<Cell>() {
+        @Override
+        public int compare(Cell o1, Cell o2) {
+          return Longs.compare(o1.getTimestamp(), o2.getTimestamp());
+        }
+      });
+
+      cells = cells.subList(0, 1000);
+    }
+
     if (cells.isEmpty()) {
       return;
     }

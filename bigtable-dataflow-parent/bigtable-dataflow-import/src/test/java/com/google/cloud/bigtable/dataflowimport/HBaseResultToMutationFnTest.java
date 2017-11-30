@@ -15,6 +15,35 @@
  */
 package com.google.cloud.bigtable.dataflowimport;
 
+import com.google.cloud.bigtable.dataflowimport.testing.HBaseCellUtils;
+import com.google.cloud.dataflow.sdk.transforms.DoFnTester;
+import com.google.cloud.dataflow.sdk.values.KV;
+import com.google.common.collect.FluentIterable;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Sets;
+import com.google.common.primitives.Longs;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.client.Mutation;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.shaded.org.apache.commons.lang.math.RandomUtils;
+import org.apache.hadoop.hbase.util.Bytes;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
+import org.mockito.Matchers;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import org.slf4j.Logger;
+
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.UUID;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -23,29 +52,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.verifyZeroInteractions;
-
-import com.google.cloud.bigtable.dataflowimport.testing.HBaseCellUtils;
-import com.google.cloud.dataflow.sdk.transforms.DoFnTester;
-import com.google.cloud.dataflow.sdk.values.KV;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Sets;
-
-import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.KeyValue;
-import org.apache.hadoop.hbase.client.Mutation;
-import org.apache.hadoop.hbase.client.Result;
-import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
-import org.apache.hadoop.hbase.util.Bytes;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import org.slf4j.Logger;
-
-import java.util.Collections;
-import java.util.List;
 
 /**
  * Unit tests for {@link HBaseResultToMutationFn}.
@@ -85,6 +91,33 @@ public class HBaseResultToMutationFnTest {
     assertEquals("Cells", Sets.newHashSet(expected),
         Sets.newHashSet(Iterables.getOnlyElement(outputs).getFamilyCellMap().get(CF)));
     verifyZeroInteractions(logger);
+  }
+
+  /**
+   * Verifies that when {@link HBaseResultToMutationFn} is called on a {@link Result}
+   * with a single {@link Cell}, that cell is passed to the output, and
+   * the logger is not invoked.
+   */
+  @Test
+  public void testResultToMutationFilteringTooLarge() throws Exception {
+    DoFnTester<KV<ImmutableBytesWritable, Result>, Mutation> doFnTester = DoFnTester.of(doFn);
+    Cell[] expected = new Cell[100000];
+    for (int i = 0; i < 100000; i++) {
+      expected[i] = new KeyValue(ROW_KEY, CF, UUID.randomUUID().toString().getBytes(), Math.abs(RandomUtils.nextLong()), VALUE);
+    }
+
+    ImmutableList<Cell> expectedCells = FluentIterable.of(expected).toSortedList(new Comparator<Cell>() {
+      @Override
+      public int compare(Cell o1, Cell o2) {
+        return Longs.compare(o1.getTimestamp(), o2.getTimestamp());
+      }
+    }).subList(0, 1000);
+
+    List<Mutation> outputs = doFnTester.processBatch(
+        KV.of(new ImmutableBytesWritable(ROW_KEY), Result.create(expected)));
+    assertEquals("Cells", Sets.newHashSet(expectedCells),
+        Sets.newHashSet(Iterables.getOnlyElement(outputs).getFamilyCellMap().get(CF)));
+    verify(logger).warn(Matchers.anyString());
   }
 
   /**
