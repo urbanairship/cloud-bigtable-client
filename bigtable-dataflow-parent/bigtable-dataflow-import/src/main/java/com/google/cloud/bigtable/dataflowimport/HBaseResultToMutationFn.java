@@ -22,7 +22,6 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
-import com.google.common.collect.FluentIterable;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Multimaps;
 
@@ -33,6 +32,7 @@ import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.util.Base64;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,7 +43,6 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * A {@link DoFn} function that converts a {@link Result} in the pipeline input to a
@@ -55,7 +54,8 @@ class HBaseResultToMutationFn
 
   private static final long serialVersionUID = 1L;
 
-  private static final long MAX_NUM_MUTATIONS = 100_000;
+  static final int MAX_ROW_KEY_SIZE = 4096;
+  static final int MAX_NUM_MUTATIONS = 100_000;
 
   private static final Predicate<Cell> IS_DELETE_MARKER_FILTER =  new Predicate<Cell>() {
     @Override
@@ -87,8 +87,20 @@ class HBaseResultToMutationFn
   public void processElement(ProcessContext context) throws Exception {
     KV<ImmutableBytesWritable, Result> kv = context.element();
     List<Cell> cells = checkEmptyRow(kv);
+
+    if (cells.isEmpty()) {
+      return;
+    }
+
+    if (kv.getValue().getRow().length >= MAX_ROW_KEY_SIZE) {
+      logger.warn(String.format("Encountered a mutation with a rowkey %d bytes in length, max processable is %d. Dropping rowkey %s",
+              kv.getValue().getRow().length, MAX_ROW_KEY_SIZE, Base64.encodeBytes(kv.getValue().getRow())));
+      return;
+    }
+
     if (cells.size() >= MAX_NUM_MUTATIONS) {
-      logger.warn(String.format("Encountered a mutation with %d columns, max processable is %d. Taking latest 1000 columns", cells.size(), MAX_NUM_MUTATIONS));
+      logger.warn(String.format("Encountered a mutation with %d columns, max processable is %d. Taking latest 1000 columns for rowkey %s",
+              cells.size(), MAX_NUM_MUTATIONS, Base64.encodeBytes(kv.getValue().getRow())));
       Collections.sort(cells, new Comparator<Cell>() {
         @Override
         public int compare(Cell o1, Cell o2) {
@@ -99,9 +111,6 @@ class HBaseResultToMutationFn
       cells = cells.subList(0, 1000);
     }
 
-    if (cells.isEmpty()) {
-      return;
-    }
     Put put = tryProcessRowWithNoDeleteMarkers(kv.getKey().get(), cells);
     if (put == null) {
       put = processRowWithDeleteMarkers(kv.getKey().get(), cells);

@@ -28,6 +28,7 @@ import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.shaded.org.apache.commons.lang.RandomStringUtils;
 import org.apache.hadoop.hbase.shaded.org.apache.commons.lang.math.RandomUtils;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.junit.Before;
@@ -95,14 +96,27 @@ public class HBaseResultToMutationFnTest {
 
   /**
    * Verifies that when {@link HBaseResultToMutationFn} is called on a {@link Result}
-   * with a single {@link Cell}, that cell is passed to the output, and
-   * the logger is not invoked.
+   * with a row key > 4KB, the result is discareded and the row is logged
+   */
+  @Test
+  public void testResultToMutationTooLarge() throws Exception {
+    DoFnTester<KV<ImmutableBytesWritable, Result>, Mutation> doFnTester = DoFnTester.of(doFn);
+    Cell[] expected = new Cell[] { new KeyValue(RandomStringUtils.randomAscii(HBaseResultToMutationFn.MAX_ROW_KEY_SIZE).getBytes(), CF, QUALIFIER, 1L, VALUE)};
+    List<Mutation> outputs = doFnTester.processBatch(
+        KV.of(new ImmutableBytesWritable(ROW_KEY), Result.create(expected)));
+    assertTrue(outputs.isEmpty());
+    verify(logger).warn(Matchers.anyString());
+  }
+
+  /**
+   * Verifies that when {@link HBaseResultToMutationFn} is called on a {@link Result}
+   * with MAX_MUTATIONS {@link Cell}, these cell is are filtered to 1000 cells, sorted by ts
    */
   @Test
   public void testResultToMutationFilteringTooLarge() throws Exception {
     DoFnTester<KV<ImmutableBytesWritable, Result>, Mutation> doFnTester = DoFnTester.of(doFn);
-    Cell[] expected = new Cell[100000];
-    for (int i = 0; i < 100000; i++) {
+    Cell[] expected = new Cell[HBaseResultToMutationFn.MAX_NUM_MUTATIONS];
+    for (int i = 0; i < HBaseResultToMutationFn.MAX_NUM_MUTATIONS; i++) {
       expected[i] = new KeyValue(ROW_KEY, CF, UUID.randomUUID().toString().getBytes(), Math.abs(RandomUtils.nextLong()), VALUE);
     }
 
